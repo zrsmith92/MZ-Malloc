@@ -86,7 +86,6 @@ static void *extend_heap();
 static inline void *coalesce();
 
 static void *find_fit(size_t size);
-static void *find_fit_from_to(size_t size, void *from, void *to);
 static inline void place(void *bp, size_t size);
 
 #if DEBUG
@@ -184,31 +183,13 @@ void *mm_malloc(size_t size)
     return bp;
 }
 
-static char *last_find = NULL;
 static void *find_fit(size_t size)
 {
-    if ( last_find == NULL )
-    {
-        // find fit hasn't run yet. run from beginning to end of heap
-        last_find = find_fit_from_to(size, NEXT_BLKP(heap_listp), mem_heap_hi());
-        return last_find;
-    }
-    
-    // find fit from last find to end
-    
-    if ( (last_find = find_fit_from_to(size, NEXT_BLKP(last_find), mem_heap_hi())) == NULL )
-        // didn't find anything from last find to end. run from beginning to last find
-        last_find = find_fit_from_to(size, NEXT_BLKP(heap_listp), last_find);
-
-    return last_find;
-}
-
-static void *find_fit_from_to(size_t size, void *from, void *to)
-{
-    void *bp = from;
+    void *bp = NEXT_BLKP(heap_listp);
     while(!(GET_SIZE(HDRP(bp)) >= size && GET_ALLOC(HDRP(bp)) == 0))
     {
-        if ( bp >= to )
+        if ( GET(HDRP(bp)) == 0x1 )
+            // We've reached the epilogue, no fit found
             return NULL;
 
         bp = NEXT_BLKP(bp);
@@ -266,11 +247,6 @@ inline static void *coalesce(void *bp)
     // previous is allocated but next is free
     else if (prev_alloc && !next_alloc)
     {
-        // if the last_find pointer was at the coalesced block, point 
-        // to the block after next
-        if ( last_find == NEXT_BLKP(bp) )
-            last_find = NEXT_BLKP(NEXT_BLKP(bp));
-
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
 
         PUT_HDR_FTR(bp, size, 0);
@@ -278,11 +254,6 @@ inline static void *coalesce(void *bp)
     // previous is free but next is allocated
     else if (!prev_alloc && next_alloc)
     {
-        // if the last_find pointer is pointing to bp, set it to point
-        // to the next block
-        if ( last_find == bp )
-            last_find = NEXT_BLKP(bp);
-
         size += GET_SIZE(FTRP(PREV_BLKP(bp)));
         PUT(FTRP(bp), PACK(size, 0));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
@@ -291,11 +262,6 @@ inline static void *coalesce(void *bp)
     // both are free
     else
     {
-        // if the last_find pointer is in coalesced block, point 
-        // to the block after next
-        if ( last_find == NEXT_BLKP(bp) || last_find == bp )
-            last_find = NEXT_BLKP(NEXT_BLKP(bp));
-
         size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp)));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
@@ -384,12 +350,10 @@ void check_heap(const char *title, ...)
         "Heap Hi:\t%p\n"
         "Heap Size:\t%zu\n"
         "heap_listp:\t%p\n"
-        "last_findp:\t%p\n",
         heap_lo,
         heap_hi,
         mem_heapsize(),
-        (void *)((void *)heap_listp - mem_heap_lo()),
-        last_find);
+        (void *)((void *)heap_listp - mem_heap_lo()));
 
     printf(
         "0x%#.8x\n"
