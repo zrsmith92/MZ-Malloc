@@ -222,7 +222,7 @@ inline static void place(void *bp, size_t size)
     size_t curr_size = GET_SIZE(HDRP(bp)); // current size
 
     // If there is enough room for another block, we need to split.
-    if ((curr_size - size) > DSIZE)
+    if ((curr_size - size) >= 2*DSIZE)
     {
         PUT_HDR_FTR(bp, size, 1);
         PUT_HDR_FTR(NEXT_BLKP(bp), (curr_size - size), 0);
