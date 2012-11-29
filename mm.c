@@ -83,7 +83,7 @@ team_t team = {
 };
 
 // Set this to 0 to remove the check_heap function and all calls to it.
-#define DEBUG 1
+#define DEBUG 0
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
@@ -480,12 +480,13 @@ void *mm_realloc(void *bp, size_t size)
         }
 
         PUT_HDR_FTR(new_bp, GET_SIZE(HDRP(new_bp)), 1);
+        remove_block(new_bp);
+
         PUT_HDR_FTR(bp, old_size, 0);
         memcpy(new_bp, bp, old_size - DSIZE);
 
         assert(memcmp(new_bp, bp, old_size - DSIZE) == 0);
 
-        remove_block(new_bp);
         coalesce(bp);
     }
 
