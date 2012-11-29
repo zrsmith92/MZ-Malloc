@@ -83,7 +83,7 @@ team_t team = {
 };
 
 // Set this to 0 to remove the check_heap function and all calls to it.
-#define DEBUG 0
+#define DEBUG 1
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
@@ -232,7 +232,9 @@ static inline void remove_block(void *bp)
         void * bin = find_bin_for_size(GET_SIZE(HDRP(bp)));
         PUT(bin, GET_NEXT(bp));
         PUT_PREV(GET_NEXT(bp), NULL);
-        DPRINTF("Replacement block: %p, Next: %p, Prev: %p\n", GET_NEXT(bp), GET_NEXT(GET_NEXT(bp)), GET_PREV(GET_NEXT(bp)));
+        DPRINTF(
+            "Replacement block: %p, Next: %p, Prev: %p\n", 
+            GET_NEXT(bp), GET_NEXT(GET_NEXT(bp)), GET_PREV(GET_NEXT(bp)));
     }
     else if ( (void *)GET_NEXT(bp) == NULL )
     {
@@ -266,7 +268,7 @@ static void *extend_heap(size_t words)
     // prepend_block(bp, size);
 
     bp = coalesce(bp);
-    CHECK_HEAP("Heap Extension, Size: %zu\n", mem_heapsize());
+    CHECK_HEAP("Heap Extension, Size: %zu", mem_heapsize());
     return bp;
 }
 
@@ -293,9 +295,7 @@ void *mm_malloc(size_t size)
     if ((bp = find_fit(adj_size)) == NULL)
     {
         extend_size = MAX(adj_size, CHUNK_SIZE);
-        if (extend_heap(extend_size/WSIZE) == NULL)
-            return NULL;
-        if ( (bp = find_fit(adj_size)) == NULL )
+        if ( (bp = extend_heap(extend_size/WSIZE)) == NULL)
             return NULL;
     } 
 
@@ -366,7 +366,6 @@ void mm_free(void *bp)
     size = GET_SIZE(HDRP(bp));
 
     PUT_HDR_FTR(bp, size, 0);
-    // prepend_block(bp, size);
     coalesce(bp);
 
     CHECK_HEAP("Freed bp: %p", bp);
@@ -439,6 +438,7 @@ void *mm_realloc(void *bp, size_t size)
     void *new_bp;
     size_t adj_size;
     size_t old_size = GET_SIZE(HDRP(bp));
+    size_t leftover;
 
     // Edge cases
     if (bp == NULL)
@@ -460,23 +460,47 @@ void *mm_realloc(void *bp, size_t size)
     if ( adj_size == old_size )
         return bp;
 
-    // Free current block
-    PUT_HDR_FTR(bp, old_size, 0);
 
-    new_bp = coalesce(bp);
-    if ( GET_SIZE(HDRP(new_bp)) < adj_size)
+    if ( 
+        !GET_ALLOC(HDRP(NEXT_BLKP(bp))) && 
+        (old_size + GET_SIZE(HDRP(NEXT_BLKP(bp)))) >= adj_size 
+    )
     {
-        // not enough free space around block, need to find new block
-        if ((new_bp = find_fit(adj_size)) == NULL)
+        // next block is unallocated and big enough to hold the new block size.
+        remove_block(NEXT_BLKP(bp));
+        new_bp = bp;
+        PUT_HDR_FTR(new_bp, (old_size + GET_SIZE(HDRP(NEXT_BLKP(bp)))), 1);
+    }
+    else
+    {
+        if ( (new_bp = find_fit(adj_size)) == NULL )
         {
-            // Still can't find big enough block. Need to expand the heap
             if ((new_bp = extend_heap(MAX(adj_size, CHUNK_SIZE)/WSIZE)) == NULL)
                 return NULL;
         }
+
+        PUT_HDR_FTR(new_bp, GET_SIZE(HDRP(new_bp)), 1);
+        PUT_HDR_FTR(bp, old_size, 0);
+        memcpy(new_bp, bp, old_size - DSIZE);
+
+        assert(memcmp(new_bp, bp, old_size - DSIZE) == 0);
+
+        remove_block(new_bp);
+        coalesce(bp);
     }
 
-    memmove(new_bp, bp, old_size);
-    place(new_bp, adj_size);
+    leftover = GET_SIZE(HDRP(new_bp)) - adj_size;
+    
+    // Modified Place
+    // If there is enough room for another block, we need to split.
+    if (leftover >= LIST_OVERHEAD + DSIZE)
+    {
+        PUT_HDR_FTR(new_bp, adj_size, 1);
+        PUT_HDR_FTR(NEXT_BLKP(new_bp), leftover, 0);
+        coalesce(NEXT_BLKP(new_bp));
+    }
+
+
     CHECK_HEAP(
         "Realloc from %p to %p\n"
         "old size:\t%zu\n"
