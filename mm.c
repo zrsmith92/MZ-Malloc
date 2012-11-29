@@ -108,8 +108,8 @@ team_t team = {
 #define HDRP(bp)            ((char *)(bp) - WSIZE)
 #define FTRP(bp)            ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)
 
-#define GET_NEXT(bp)        GET(bp)
-#define GET_PREV(bp)        GET((char *)(bp) + PTR_SIZE)
+#define GET_NEXT(bp)        ((void *)GET(bp))
+#define GET_PREV(bp)        ((void *)GET((char *)(bp) + PTR_SIZE))
 #define PUT_NEXT(bp1, bp2)  PUT((char *)(bp1), bp2)
 #define PUT_PREV(bp1, bp2)  PUT(((char *)(bp1) + PTR_SIZE), bp2)
 
@@ -132,9 +132,12 @@ static inline void remove_block(void *bp);
 
 #if DEBUG
 #define CHECK_HEAP(s, ...) check_heap(s, ##__VA_ARGS__)
+// printf, but only prints if in debugging mode
+#define DPRINTF(...) printf(__VA_ARGS__)
 static void check_heap(const char *title, ...);
 #else
 #define CHECK_HEAP(s, ...)
+#define DPRINTF(...)
 #endif
 
 
@@ -194,17 +197,20 @@ static void *find_bin_for_size(size_t size)
 
 static inline void prepend_block(void *bp, size_t size)
 {
+    DPRINTF("Begin prepend_block, %p\n", bp);
+
     void * bin = find_bin_for_size(size);
-    if ( GET(bin) == 0 )
+    if ( (void *)GET(bin) == NULL )
     {
         // no elements in list currently
         PUT(bin, bp);
-        PUT_PREV(bp, 0);
-        PUT_NEXT(bp, 0);
+        PUT_PREV(bp, NULL);
+        PUT_NEXT(bp, NULL);
     }
     else
     {
-        PUT_PREV(bp, 0);
+        PUT_PREV(bp, NULL);
+        PUT_PREV(GET(bin), bp);
         PUT_NEXT(bp, GET(bin));
         PUT(bin, bp);
     }
@@ -212,6 +218,8 @@ static inline void prepend_block(void *bp, size_t size)
 
 static inline void remove_block(void *bp)
 {
+    DPRINTF("Removing block: %p, Next: %p, Prev: %p\n", bp, GET_NEXT(bp), GET_PREV(bp));
+
     if ( (void *)GET_PREV(bp) == NULL && (void *)GET_NEXT(bp) == NULL )
     {
         // block is only block in list. list will now be empty.
@@ -220,10 +228,16 @@ static inline void remove_block(void *bp)
     }
     else if ( (void *)GET_PREV(bp) == NULL )
     {
-        // block is the first block in list, but not only block.
+        // block is the first block in list, but not the only block.
         void * bin = find_bin_for_size(GET_SIZE(HDRP(bp)));
         PUT(bin, GET_NEXT(bp));
         PUT_PREV(GET_NEXT(bp), NULL);
+        DPRINTF("Replacement block: %p, Next: %p, Prev: %p\n", GET_NEXT(bp), GET_NEXT(GET_NEXT(bp)), GET_PREV(GET_NEXT(bp)));
+    }
+    else if ( (void *)GET_NEXT(bp) == NULL )
+    {
+        // at the end of the list. just set the previous to be the end
+        PUT_NEXT(GET_PREV(bp), NULL);
     }
     else
     {
@@ -234,6 +248,8 @@ static inline void remove_block(void *bp)
 
 static void *extend_heap(size_t words)
 {
+    DPRINTF("Begin extend_heap\n");
+
     char *bp;
     size_t size;
 
@@ -247,7 +263,7 @@ static void *extend_heap(size_t words)
     PUT(HDRP(NEXT_BLKP(bp)), PACK(0,1));
 
     // Attach to the appropriate bin's free list.
-    prepend_block(bp, size);
+    // prepend_block(bp, size);
 
     bp = coalesce(bp);
     CHECK_HEAP("Heap Extension, Size: %zu\n", mem_heapsize());
@@ -260,6 +276,8 @@ static void *extend_heap(size_t words)
  */
 void *mm_malloc(size_t size)
 {
+    DPRINTF("Begin mm_malloc\n");
+
     size_t adj_size;    // adjusted size for header/footer and alignment
     size_t extend_size; // amount to extend if no fit
     char *bp;
@@ -288,6 +306,8 @@ void *mm_malloc(size_t size)
 
 static void *find_fit(size_t size)
 {
+    DPRINTF("Begin find_fit\n");
+
     void * bin;
     void * bp;
 
@@ -311,6 +331,8 @@ static void *find_fit(size_t size)
 
 inline static void place(void *bp, size_t size)
 {
+    DPRINTF("Begin place\n");
+
     size_t curr_size = GET_SIZE(HDRP(bp)); // current size
     size_t leftover = curr_size - size;
 
@@ -334,6 +356,8 @@ inline static void place(void *bp, size_t size)
  */
 void mm_free(void *bp)
 {
+    DPRINTF("Begin mm_free\n");
+
     size_t size;
     // slight optimization. If it's already freed, skip the coalescing
     if ( GET_ALLOC(HDRP(bp)) == 0 )
@@ -342,7 +366,7 @@ void mm_free(void *bp)
     size = GET_SIZE(HDRP(bp));
 
     PUT_HDR_FTR(bp, size, 0);
-    prepend_block(bp, size);
+    // prepend_block(bp, size);
     coalesce(bp);
 
     CHECK_HEAP("Freed bp: %p", bp);
@@ -351,6 +375,8 @@ void mm_free(void *bp)
 
 static inline void *coalesce(void *bp)
 {
+    DPRINTF("Begin coalesce\n");
+
     int prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
     int next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
     size_t size = GET_SIZE(HDRP(bp));
@@ -358,12 +384,13 @@ static inline void *coalesce(void *bp)
     // both previous and next blocks are allocated; nothing to do
     if (prev_alloc && next_alloc)
     {
+        prepend_block(bp, size);
         return bp;
     }
     // previous is allocated but next is free
     else if (prev_alloc && !next_alloc)
     {
-        remove_block(bp);
+        // remove_block(bp);
 
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
 
@@ -375,7 +402,7 @@ static inline void *coalesce(void *bp)
     // previous is free but next is allocated
     else if (!prev_alloc && next_alloc)
     {
-        remove_block(bp);
+        // remove_block(bp);
         remove_block(PREV_BLKP(bp));
 
         size += GET_SIZE(FTRP(PREV_BLKP(bp)));
@@ -388,7 +415,7 @@ static inline void *coalesce(void *bp)
     // both are free
     else
     {
-        remove_block(bp);
+        // remove_block(bp);
         remove_block(PREV_BLKP(bp));
         remove_block(NEXT_BLKP(bp));
 
@@ -407,6 +434,8 @@ static inline void *coalesce(void *bp)
  */
 void *mm_realloc(void *bp, size_t size)
 {
+    DPRINTF("Begin mm_realloc\n");
+
     void *new_bp;
     size_t adj_size;
     size_t old_size = GET_SIZE(HDRP(bp));
@@ -511,7 +540,12 @@ void check_heap(const char *title, ...)
     printf("blk #\tbp\t\tHDR\t\tSize\t\tAlloc\tNext\tPrev\tFTR\n"
         "-----------------------------------------------------------------\n");
     
-    for ( bp = block_lo; bp < heap_hi; bp = NEXT_BLKP(bp) )
+    printf(
+        "prlg\t%8p\t%#.8x\t%.8zu\t%d\t\t(N/A)\t\t(N/A)\t%#.8x\n",
+        block_lo, GET(HDRP(block_lo)), (size_t)GET_SIZE(HDRP(block_lo)), 
+        GET_ALLOC(HDRP(block_lo)), GET(FTRP(block_lo)));
+
+    for ( bp = NEXT_BLKP(block_lo); bp < heap_hi; bp = NEXT_BLKP(bp) )
     {
         if ( GET_ALLOC(HDRP(bp)) )
         {
@@ -532,6 +566,19 @@ void check_heap(const char *title, ...)
                 (void *)GET_PREV(bp), 
                 GET(FTRP(bp))
             );
+
+            // ensure link list pointers are valid
+            assert(
+                (GET_NEXT(bp) < heap_hi && GET_NEXT(bp) > heap_lo) ||
+                GET_NEXT(bp) == NULL
+            );
+            assert(
+                (GET_PREV(bp) < heap_hi && GET_PREV(bp) > heap_lo) ||
+                GET_PREV(bp) == NULL
+            );
+
+            if ( GET_NEXT(bp) != NULL )
+                assert(GET_PREV(GET_NEXT(bp)) == bp);
         }
 
         // Block is aligned to 8 byte boundary
@@ -542,6 +589,13 @@ void check_heap(const char *title, ...)
 
         i++;
     }
+
+    printf(
+        "eplg\t%8p\t%#.8x\t%.8zu\t%d\t\t(N/A)\t\t(N/A)\t%#.8x\n",
+        bp, GET(HDRP(bp)), (size_t)GET_SIZE(HDRP(bp)), 
+        GET_ALLOC(HDRP(bp)), GET(FTRP(bp))
+    );
+
 
     printf("\n\n");
 }
