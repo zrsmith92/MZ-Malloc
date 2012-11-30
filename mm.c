@@ -461,33 +461,36 @@ void *mm_realloc(void *bp, size_t size)
         return bp;
 
 
-    if ( 
-        !GET_ALLOC(HDRP(NEXT_BLKP(bp))) && 
-        (old_size + GET_SIZE(HDRP(NEXT_BLKP(bp)))) >= adj_size 
-    )
+    if ( adj_size > old_size )
     {
-        // next block is unallocated and big enough to hold the new block size.
-        remove_block(NEXT_BLKP(bp));
-        new_bp = bp;
-        PUT_HDR_FTR(new_bp, (old_size + GET_SIZE(HDRP(NEXT_BLKP(bp)))), 1);
-    }
-    else
-    {
-        if ( (new_bp = find_fit(adj_size)) == NULL )
+        // if the new soize is smaller than the old size, we just need to split
+        // the block into an allocated block and a free block after it.
+        if ( 
+            !GET_ALLOC(HDRP(NEXT_BLKP(bp))) && 
+            (old_size + GET_SIZE(HDRP(NEXT_BLKP(bp)))) >= adj_size 
+        )
         {
-            if ((new_bp = extend_heap(MAX(adj_size, CHUNK_SIZE)/WSIZE)) == NULL)
-                return NULL;
+            // next block is unallocated and big enough to hold the new block size.
+            remove_block(NEXT_BLKP(bp));
+            new_bp = bp;
+            PUT_HDR_FTR(new_bp, (old_size + GET_SIZE(HDRP(NEXT_BLKP(bp)))), 1);
         }
+        else
+        {
+            if ( (new_bp = find_fit(adj_size)) == NULL )
+            {
+                if ((new_bp = extend_heap(MAX(adj_size, CHUNK_SIZE)/WSIZE)) == NULL)
+                    return NULL;
+            }
 
-        PUT_HDR_FTR(new_bp, GET_SIZE(HDRP(new_bp)), 1);
-        remove_block(new_bp);
+            PUT_HDR_FTR(new_bp, GET_SIZE(HDRP(new_bp)), 1);
+            remove_block(new_bp);
 
-        PUT_HDR_FTR(bp, old_size, 0);
-        memcpy(new_bp, bp, old_size - DSIZE);
+            PUT_HDR_FTR(bp, old_size, 0);
+            memcpy(new_bp, bp, old_size - DSIZE);
 
-        assert(memcmp(new_bp, bp, old_size - DSIZE) == 0);
-
-        coalesce(bp);
+            coalesce(bp);
+        }
     }
 
     leftover = GET_SIZE(HDRP(new_bp)) - adj_size;
