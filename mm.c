@@ -449,7 +449,6 @@ void *mm_realloc(void *bp, size_t size)
     size_t adj_size;
     size_t old_size = GET_SIZE(HDRP(bp));
     size_t coalesce_size;
-    size_t leftover;
 
     size_t next_size;
     size_t prev_size;
@@ -551,20 +550,7 @@ void *mm_realloc(void *bp, size_t size)
             memcpy(new_bp, bp, old_size - DSIZE);
 
             coalesce(bp);
-            // don't split block in hopes of future realloc use
-            return new_bp;
         }
-    }
-
-    leftover = GET_SIZE(HDRP(new_bp)) - adj_size;
-    
-    // Modified Place
-    // If there is enough room for another block, we need to split.
-    if (leftover >= LIST_OVERHEAD + DSIZE)
-    {
-        PUT_HDR_FTR(new_bp, adj_size, 1);
-        PUT_HDR_FTR(NEXT_BLKP(new_bp), leftover, 0);
-        coalesce(NEXT_BLKP(new_bp));
     }
 
 
