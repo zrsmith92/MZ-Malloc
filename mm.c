@@ -97,6 +97,7 @@ team_t team = {
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
 
 #define CHUNK_SIZE (1<<12)
+// #define CHUNK_SIZE (614792)
 #define PTR_SIZE sizeof(void *)
 #define LIST_OVERHEAD (2 * PTR_SIZE)
 
@@ -128,7 +129,7 @@ static void *find_fit(size_t size);
 static inline void place(void *bp, size_t size);
 static void *find_bin_for_size(size_t size);
 static inline void prepend_block(void *bp, size_t size);
-static inline void remove_block(void *bp);
+static inline void remove_block(void *bp, size_t size);
 
 #if DEBUG
 #define CHECK_HEAP(s, ...) check_heap(s, ##__VA_ARGS__)
@@ -149,6 +150,9 @@ static void * block_lo;
 
 // Last item in list of bin pointers
 static void * bin_hi;
+
+// The largest known free block;
+static size_t largest_free = 0;
 
 /*
  * mm_init - initialize the malloc package.
@@ -177,19 +181,19 @@ int mm_init(void)
 
 static void *find_bin_for_size(size_t size)
 {
-    if ( size <= 32 )
+    if ( size <= 128 )
         return heap_lo;
-    else if ( size <= 64 )
-        return (void *)((unsigned int)heap_lo + (WSIZE));
-    else if ( size <= 128 )
-        return (void *)((unsigned int)heap_lo + (2 * WSIZE));
     else if ( size <= 256 )
-        return (void *)((unsigned int)heap_lo + (3 * WSIZE));
+        return (void *)((unsigned int)heap_lo + (WSIZE));
     else if ( size <= 512 )
-        return (void *)((unsigned int)heap_lo + (4 * WSIZE));
+        return (void *)((unsigned int)heap_lo + (2 * WSIZE));
     else if ( size <= 1024 )
-        return (void *)((unsigned int)heap_lo + (5 * WSIZE));
+        return (void *)((unsigned int)heap_lo + (3 * WSIZE));
     else if ( size <= 2048 )
+        return (void *)((unsigned int)heap_lo + (4 * WSIZE));
+    else if ( size <= 4096 )
+        return (void *)((unsigned int)heap_lo + (5 * WSIZE));
+    else if ( size <= 8192 )
         return (void *)((unsigned int)heap_lo + (6 * WSIZE));
     else
         return (void *)((unsigned int)heap_lo + (7 * WSIZE));
@@ -200,7 +204,8 @@ static inline void prepend_block(void *bp, size_t size)
     DPRINTF("Begin prepend_block, %p\n", bp);
 
     void * bin = find_bin_for_size(size);
-    if ( (void *)GET(bin) == NULL )
+    void * bin_first = (void *)GET(bin);
+    if ( bin_first == NULL )
     {
         // no elements in list currently
         PUT(bin, bp);
@@ -210,42 +215,52 @@ static inline void prepend_block(void *bp, size_t size)
     else
     {
         PUT_PREV(bp, NULL);
-        PUT_PREV(GET(bin), bp);
-        PUT_NEXT(bp, GET(bin));
+        PUT_PREV(bin_first, bp);
+        PUT_NEXT(bp, bin_first);
         PUT(bin, bp);
     }
+
+    if ( size > largest_free )
+        largest_free = size;
 }
 
-static inline void remove_block(void *bp)
+static inline void remove_block(void *bp, size_t size)
 {
-    DPRINTF("Removing block: %p, Next: %p, Prev: %p\n", bp, GET_NEXT(bp), GET_PREV(bp));
+    DPRINTF("Removing block: %p(%zu), Next: %p, Prev: %p\n", bp, size, GET_NEXT(bp), GET_PREV(bp));
 
-    if ( (void *)GET_PREV(bp) == NULL && (void *)GET_NEXT(bp) == NULL )
+    void * prev_bp = GET_PREV(bp);
+    void * next_bp = GET_NEXT(bp);
+    void * bin;
+
+    if ( prev_bp == NULL && next_bp == NULL )
     {
         // block is only block in list. list will now be empty.
-        void * bin = find_bin_for_size(GET_SIZE(HDRP(bp)));
+        bin = find_bin_for_size(GET_SIZE(HDRP(bp)));
         PUT(bin, NULL);
     }
-    else if ( (void *)GET_PREV(bp) == NULL )
+    else if ( prev_bp == NULL )
     {
         // block is the first block in list, but not the only block.
-        void * bin = find_bin_for_size(GET_SIZE(HDRP(bp)));
-        PUT(bin, GET_NEXT(bp));
-        PUT_PREV(GET_NEXT(bp), NULL);
+        bin = find_bin_for_size(GET_SIZE(HDRP(bp)));
+        PUT(bin, next_bp);
+        PUT_PREV(next_bp, NULL);
         DPRINTF(
             "Replacement block: %p, Next: %p, Prev: %p\n", 
-            GET_NEXT(bp), GET_NEXT(GET_NEXT(bp)), GET_PREV(GET_NEXT(bp)));
+            next_bp, GET_NEXT(next_bp), GET_PREV(next_bp));
     }
-    else if ( (void *)GET_NEXT(bp) == NULL )
+    else if ( next_bp == NULL )
     {
         // at the end of the list. just set the previous to be the end
-        PUT_NEXT(GET_PREV(bp), NULL);
+        PUT_NEXT(prev_bp, NULL);
     }
     else
     {
-        PUT_NEXT(GET_PREV(bp), GET_NEXT(bp));
-        PUT_PREV(GET_NEXT(bp), GET_PREV(bp));
+        PUT_NEXT(prev_bp, next_bp);
+        PUT_PREV(next_bp, prev_bp);
     }
+
+    if ( size >= largest_free )
+        largest_free = 0;
 }
 
 static void *extend_heap(size_t words)
@@ -265,9 +280,9 @@ static void *extend_heap(size_t words)
     PUT(HDRP(NEXT_BLKP(bp)), PACK(0,1));
 
     // Attach to the appropriate bin's free list.
-    // prepend_block(bp, size);
 
     bp = coalesce(bp);
+
     CHECK_HEAP("Heap Extension, Size: %zu", mem_heapsize());
     return bp;
 }
@@ -311,14 +326,11 @@ static void *find_fit(size_t size)
     void * bin;
     void * bp;
 
+    if ( largest_free != 0 && size > largest_free )
+        return NULL;
+
     for (bin = find_bin_for_size(size); bin <= bin_hi; bin += WSIZE )
     {
-        if ( (void *)GET(bin) == NULL )
-        {
-            // bin is empty or we're at end of bin. next bin;
-            continue;
-        }
-
         for ( bp = (void *)GET(bin); bp != NULL; bp = (void *)GET_NEXT(bp) )
         {
             if ( GET_SIZE(HDRP(bp)) >= size )
@@ -336,7 +348,7 @@ inline static void place(void *bp, size_t size)
     size_t curr_size = GET_SIZE(HDRP(bp)); // current size
     size_t leftover = curr_size - size;
 
-    remove_block(bp);
+    remove_block(bp, curr_size);
 
     // If there is enough room for another block, we need to split.
     if (leftover >= LIST_OVERHEAD + DSIZE)
@@ -379,6 +391,8 @@ static inline void *coalesce(void *bp)
     int prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
     int next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
     size_t size = GET_SIZE(HDRP(bp));
+    size_t prev_size = GET_SIZE(HDRP(PREV_BLKP(bp)));
+    size_t next_size = GET_SIZE(HDRP(NEXT_BLKP(bp)));
 
     // both previous and next blocks are allocated; nothing to do
     if (prev_alloc && next_alloc)
@@ -389,11 +403,9 @@ static inline void *coalesce(void *bp)
     // previous is allocated but next is free
     else if (prev_alloc && !next_alloc)
     {
-        // remove_block(bp);
+        size += next_size;
 
-        size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
-
-        remove_block(NEXT_BLKP(bp));
+        remove_block(NEXT_BLKP(bp), next_size);
         prepend_block(bp, size);
 
         PUT_HDR_FTR(bp, size, 0);
@@ -401,10 +413,9 @@ static inline void *coalesce(void *bp)
     // previous is free but next is allocated
     else if (!prev_alloc && next_alloc)
     {
-        // remove_block(bp);
-        remove_block(PREV_BLKP(bp));
+        remove_block(PREV_BLKP(bp), prev_size);
 
-        size += GET_SIZE(FTRP(PREV_BLKP(bp)));
+        size += prev_size;
         PUT(FTRP(bp), PACK(size, 0));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
@@ -414,11 +425,10 @@ static inline void *coalesce(void *bp)
     // both are free
     else
     {
-        // remove_block(bp);
-        remove_block(PREV_BLKP(bp));
-        remove_block(NEXT_BLKP(bp));
+        remove_block(PREV_BLKP(bp), prev_size);
+        remove_block(NEXT_BLKP(bp), next_size);
 
-        size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp)));
+        size += prev_size + next_size;
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
@@ -438,7 +448,14 @@ void *mm_realloc(void *bp, size_t size)
     void *new_bp;
     size_t adj_size;
     size_t old_size = GET_SIZE(HDRP(bp));
+    size_t coalesce_size;
     size_t leftover;
+
+    size_t next_size;
+    size_t prev_size;
+
+    int prev_alloc;
+    int next_alloc;
 
     // Edge cases
     if (bp == NULL)
@@ -449,6 +466,8 @@ void *mm_realloc(void *bp, size_t size)
         mm_free(bp);
         return NULL;
     }
+
+    // printf("bp @ %p,\tNext blkp @ %p,\tHeap Hi @ %p\n", NEXT_BLKP(bp), mem_heap_hi());
 
     // Adjust size to be word aligned and at least big enough for header/footer
     if ( size <= LIST_OVERHEAD )
@@ -461,35 +480,79 @@ void *mm_realloc(void *bp, size_t size)
         return bp;
 
 
-    if ( adj_size > old_size )
+    // if the new size is smaller than the old size, we just need to split
+    // the block into an allocated block and a free block after it.
+    if ( adj_size < old_size )
     {
-        // if the new soize is smaller than the old size, we just need to split
-        // the block into an allocated block and a free block after it.
-        if ( 
-            !GET_ALLOC(HDRP(NEXT_BLKP(bp))) && 
-            (old_size + GET_SIZE(HDRP(NEXT_BLKP(bp)))) >= adj_size 
+        new_bp = bp;
+    }
+    else
+    {
+        // Custom coalesce
+        prev_alloc = GET_ALLOC(HDRP(PREV_BLKP(bp)));
+        next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
+
+        next_size = GET_SIZE(HDRP(NEXT_BLKP(bp)));
+        prev_size = GET_SIZE(HDRP(PREV_BLKP(bp)));
+
+        
+        if ( !next_alloc && prev_alloc && (old_size + next_size) >= adj_size )
+        {
+            // coalesce forward, the easiest.
+            // next block is unallocated and big enough to hold the new block size.
+            // printf("Realloc coalescing forward for size %zu(%zu)\n", size, adj_size);
+
+            remove_block(NEXT_BLKP(bp), next_size);
+            new_bp = bp;
+            coalesce_size = old_size + GET_SIZE(HDRP(NEXT_BLKP(bp)));
+            PUT_HDR_FTR(new_bp, coalesce_size, 1);
+        }
+        else if ( next_alloc && !prev_alloc && (old_size + prev_size) >= adj_size )
+        {
+            // coalesce backward
+            // printf("Realloc coalescing backward for size %zu(%zu)\n", size, adj_size);
+
+            remove_block(PREV_BLKP(bp), prev_size);
+            new_bp = PREV_BLKP(bp);
+            coalesce_size = old_size + GET_SIZE(HDRP(PREV_BLKP(bp)));
+            PUT_HDR_FTR(new_bp, coalesce_size, 1);
+            memmove(new_bp, bp, old_size);
+        }
+        else if ( 
+            !next_alloc && !prev_alloc &&
+            (old_size + prev_size + next_size) >= adj_size
         )
         {
-            // next block is unallocated and big enough to hold the new block size.
-            remove_block(NEXT_BLKP(bp));
-            new_bp = bp;
-            PUT_HDR_FTR(new_bp, (old_size + GET_SIZE(HDRP(NEXT_BLKP(bp)))), 1);
+            // both surrounding blocks are free.
+            // printf("Realloc coalescing both ways for size %zu(%zu)\n", size, adj_size);
+
+            remove_block(PREV_BLKP(bp), prev_size);
+            remove_block(NEXT_BLKP(bp), next_size);
+            new_bp = PREV_BLKP(bp);
+            coalesce_size = old_size + prev_size + next_size;
+            PUT_HDR_FTR(new_bp, coalesce_size, 1);
+            memmove(new_bp, bp, old_size);
         }
         else
         {
+            // printf("Realloc coalescing impossible for size %zu(%zu)\n", size, adj_size);
             if ( (new_bp = find_fit(adj_size)) == NULL )
             {
-                if ((new_bp = extend_heap(MAX(adj_size, CHUNK_SIZE)/WSIZE)) == NULL)
+                // if ( (new_bp = extend_heap(MAX(adj_size, CHUNK_SIZE)/WSIZE)) == NULL )
+                if ( (new_bp = extend_heap((adj_size + CHUNK_SIZE)/WSIZE)) == NULL )
                     return NULL;
             }
 
+            // check for a second round of forward coalescing
             PUT_HDR_FTR(new_bp, GET_SIZE(HDRP(new_bp)), 1);
-            remove_block(new_bp);
+            remove_block(new_bp, GET_SIZE(HDRP(new_bp)));
 
             PUT_HDR_FTR(bp, old_size, 0);
             memcpy(new_bp, bp, old_size - DSIZE);
 
             coalesce(bp);
+            // don't split block in hopes of future realloc use
+            return new_bp;
         }
     }
 
