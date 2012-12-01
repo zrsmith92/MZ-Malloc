@@ -542,7 +542,7 @@ void *mm_realloc(void *bp, size_t size)
             if ( (new_bp = find_fit(adj_size)) == NULL )
             {
                 // if ( (new_bp = extend_heap(MAX(adj_size, CHUNK_SIZE)/WSIZE)) == NULL )
-                if ( (new_bp = extend_heap((adj_size + CHUNK_SIZE)/WSIZE)) == NULL )
+                if ( (new_bp = extend_heap((adj_size + 1024)/WSIZE)) == NULL )
                     return NULL;
             }
 
